@@ -1358,7 +1358,7 @@ function TaskCard({
             aria-checked={task.done}
             title={task.done ? 'Mark as open' : 'Mark as done'}
           >
-            {task.done ? 'done' : 'open'}
+            {task.done ? 'Done' : 'Open'}
           </button>
         </div>
       </header>
@@ -1402,7 +1402,7 @@ function TaskCard({
             <span className={`tcard-avatar dot-${folder?.color ?? 'grey'}`}>{(doc.title.trim()[0] ?? '·').toUpperCase()}</span>
             <div>
               <b>{doc.title || 'Untitled'}</b>
-              <a href={`#/doc/${doc.id}`}>open note</a>
+              <a href={`#/doc/${doc.id}`}>Open note</a>
             </div>
           </div>
         </div>
