@@ -2,38 +2,6 @@ import type { FolderColor } from './store'
 
 export const COLORS: FolderColor[] = ['blue', 'yellow', 'lavender', 'green', 'pink', 'orange', 'grey']
 
-interface Props {
-  color: FolderColor
-  count: number
-  label?: string
-  size?: 'lg' | 'sm'
-}
-
-/** The glassy folder illustration: back panel + peeking pages + frosted front panel. */
-export function FolderArt({ color, count, label, size = 'lg' }: Props) {
-  return (
-    <div className={`folder-art folder-${color} folder-${size}`} aria-hidden>
-      <div className="fa-glow" />
-      <div className="fa-back" />
-      <div className="fa-page fa-page-1">
-        <i /><i /><i />
-      </div>
-      <div className="fa-page fa-page-2">
-        <i /><i /><i />
-      </div>
-      <div className="fa-front">
-        {size === 'lg' && (
-          <>
-            <span className="fa-chip fa-count">{count}</span>
-            {label && <span className="fa-chip fa-label">{label}</span>}
-            <span className="fa-rule" />
-          </>
-        )}
-      </div>
-    </div>
-  )
-}
-
 export function Logo({ size = 22 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 100 100" aria-hidden>

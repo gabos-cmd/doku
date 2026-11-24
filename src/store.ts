@@ -55,13 +55,13 @@ function seed(): State {
     { id: 'f-ideas', spaceId: 's-personal', name: 'Ideas', color: 'grey', favorite: false, createdAt: now },
   ]
   const d = (folderId: string, title: string, body: string, ago: number): Doc => ({
-    id: uid(), folderId, title, body, createdAt: now - ago, updatedAt: now - ago,
+    id: uid(), folderId, title, body: normalizeDates(body), createdAt: now - ago, updatedAt: now - ago,
   })
   const docs: Doc[] = [
     d('f-math', 'Derivatives — chain rule', 'If y = f(g(x)), then dy/dx = f\'(g(x)) · g\'(x).\n\nBuilds on [[Limits recap]]. Practice: differentiate sin(x²).', 2 * 3_600_000),
     d('f-math', 'Limits recap', 'A limit describes the value a function approaches as the input approaches some value.', DAY + 3_600_000),
     d('f-math', 'Integration by parts', '∫u dv = uv − ∫v du\n\nThe reverse of the product rule — see [[Derivatives — chain rule]].', 3 * DAY),
-    d('f-math', 'Exam prep checklist', 'Chapters 3–6. Past papers 2023, 2024.\n\n- [x] Past paper 2023\n- [ ] Past paper 2024\n- [ ] Review [[Integration by parts]]\n- [ ] Review [[Vectors intro]]', 12 * DAY),
+    d('f-math', 'Exam prep checklist', 'Chapters 3–6. Past papers 2023, 2024.\n\n- [x] Past paper 2023\n- [ ] Past paper 2024 @tomorrow\n- [ ] Review [[Integration by parts]]\n- [ ] Review [[Vectors intro]]', 12 * DAY),
     d('f-math', 'Vectors intro', 'Magnitude, direction, dot product.', 40 * DAY),
     d('f-history', 'The Industrial Revolution', 'Began in Britain around 1760.', 5 * 3_600_000),
     d('f-history', 'Cold War timeline', '1947 — Truman Doctrine\n1961 — Berlin Wall', 6 * DAY),
@@ -71,7 +71,7 @@ function seed(): State {
     d('f-code', 'Git cheatsheet', 'git switch -c feature\ngit rebase main', 9 * DAY),
     d('f-journal', 'Sunday', 'Long walk, good coffee.', 2 * DAY),
     d('f-ideas', 'Dok roadmap', '- [x] To-do blocks\n- [ ] Images\n- [ ] Nested folders\n\nType inspiration: [[Typography notes]].', 60 * 60_000),
-    d('f-journal', 'This week', '- [ ] Call grandma\n- [ ] Library books due\n- [x] Buy running shoes', 4 * 3_600_000),
+    d('f-journal', 'This week', '- [ ] Call grandma\n- [ ] Library books due @today\n- [x] Buy running shoes', 4 * 3_600_000),
   ]
   return { spaces, folders, docs }
 }
@@ -234,7 +234,25 @@ export function useStore() {
         const body = d.body.replace(/\s+$/, '')
         const lastIsTask = TASK_RE.test(body.split('\n').pop() ?? '')
         const sep = !body ? '' : lastIsTask ? '\n' : '\n\n'
-        return { ...d, body: `${body}${sep}- [ ] ${t}`, updatedAt: Date.now() }
+        return { ...d, body: `${body}${sep}- [ ] ${normalizeDates(t)}`, updatedAt: Date.now() }
+      }),
+    }))
+  }, [])
+
+  /** Rewrite a to-do's text (keeps its checkbox); empty text deletes the line. */
+  const editTask = useCallback((docId: string, line: number, text: string) => {
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) => {
+        if (d.id !== docId) return d
+        const lines = d.body.split('\n')
+        const m = TASK_RE.exec(lines[line] ?? '')
+        if (!m) return d
+        const t = normalizeDates(text.trim())
+        if (t) lines[line] = `${m[1]}${m[2]}] ${t}`
+        else lines.splice(line, 1)
+        const body = lines.join('\n')
+        return body === d.body ? d : { ...d, body, updatedAt: Date.now() }
       }),
     }))
   }, [])
@@ -271,6 +289,7 @@ export function useStore() {
     toggleTask,
     addTask,
     clearDone,
+    editTask,
     replaceAll,
   }
 }
@@ -346,15 +365,24 @@ export const TASK_RE = /^(\s*[-*+]\s+\[)([ xX])(\]\s.*|\])$/
 export interface Task {
   docId: string
   line: number
+  /** raw text, as written (including any @date) */
+  raw: string
+  /** text with the @date taken out */
   text: string
   done: boolean
+  /** YYYY-MM-DD */
+  due?: string
 }
 
 export function parseTasks(doc: Doc): Task[] {
   const out: Task[] = []
   doc.body.split('\n').forEach((l, i) => {
     const m = TASK_RE.exec(l)
-    if (m) out.push({ docId: doc.id, line: i, text: m[3].slice(1).trim(), done: m[2] !== ' ' })
+    if (!m) return
+    const raw = m[3].slice(1).trim()
+    const dm = DUE_RE.exec(raw)
+    const text = dm ? (raw.slice(0, dm.index) + raw.slice(dm.index + dm[0].length)).replace(/\s{2,}/g, ' ').trim() : raw
+    out.push({ docId: doc.id, line: i, raw, text, done: m[2] !== ' ', due: dm?.[2] })
   })
   return out
 }
@@ -362,4 +390,55 @@ export function parseTasks(doc: Doc): Task[] {
 export function taskStats(doc: Doc) {
   const t = parseTasks(doc)
   return { total: t.length, done: t.filter((x) => x.done).length }
+}
+
+/* ---------- due dates: `@2026-12-05`, typed as @today / @tomorrow / @fri ---------- */
+
+const DUE_RE = /(^|\s)@(\d{4}-\d{2}-\d{2})(?=\s|$)/
+
+const iso = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+export const todayIso = () => iso(new Date())
+
+const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+const FULL_DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+
+/** Turn @today, @tomorrow/@tmr, @mon…@sun (next one) and @nextweek into @YYYY-MM-DD. */
+export function normalizeDates(text: string): string {
+  return text.replace(/(^|\s)@([a-z]+)(?=\s|$)/gi, (all, pre: string, word: string) => {
+    const w = word.toLowerCase()
+    const d = new Date()
+    d.setHours(12, 0, 0, 0)
+    if (w === 'today' || w === 'tod') {
+      /* today */
+    } else if (w === 'tomorrow' || w === 'tmr' || w === 'tom') d.setDate(d.getDate() + 1)
+    else if (w === 'nextweek') d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7))
+    else {
+      const i = WEEKDAYS.findIndex((x, k) => w === x || w === FULL_DAYS[k])
+      if (i < 0) return all
+      d.setDate(d.getDate() + ((i - d.getDay() + 7) % 7 || 7))
+    }
+    return `${pre}@${iso(d)}`
+  })
+}
+
+/** Days from today to `due` (negative = overdue). */
+export function daysUntil(due: string): number {
+  const [y, m, d] = due.split('-').map(Number)
+  const a = new Date(y, m - 1, d).getTime()
+  const t = new Date()
+  t.setHours(0, 0, 0, 0)
+  return Math.round((a - t.getTime()) / DAY)
+}
+
+export function dueLabel(due: string): string {
+  const n = daysUntil(due)
+  if (n === 0) return 'Today'
+  if (n === 1) return 'Tomorrow'
+  if (n === -1) return 'Yesterday'
+  const [y, m, d] = due.split('-').map(Number)
+  const date = new Date(y, m - 1, d)
+  if (n > 1 && n < 7) return date.toLocaleDateString(undefined, { weekday: 'long' })
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(y !== new Date().getFullYear() ? { year: 'numeric' } : {}) })
 }

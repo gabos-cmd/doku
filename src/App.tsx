@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FolderArt, Logo, COLORS } from './FolderArt'
+import { createPortal } from 'react-dom'
+import { Logo, COLORS } from './FolderArt'
+import { Mosaic } from './Mosaic'
 import { GraphView } from './Graph'
 import {
   demoState,
@@ -11,6 +13,10 @@ import {
   sanitize,
   taskStats,
   TASK_RE,
+  daysUntil,
+  dueLabel,
+  normalizeDates,
+  type Task,
   useStore,
   type Doc,
   type Folder,
@@ -222,7 +228,7 @@ export default function App() {
           </button>
         </header>
 
-        <div className="content">
+        <div className="content" key={'id' in route ? `${route.view}/${route.id}` : route.view}>
           {route.view === 'graph' && <GraphView state={store.state} />}
           {route.view === 'tasks' && <TasksView store={store} />}
           {route.view === 'home' && <Home store={store} onNewFolder={(spaceId) => setCreating({ spaceId })} />}
@@ -400,11 +406,17 @@ function FolderGrid({ store, list, onNew }: { store: Store; list: Folder[]; onNe
         const last = Math.max(0, ...fdocs.map((d) => d.updatedAt))
         return (
           <a key={f.id} className="folder-card" href={`#/folder/${f.id}`}>
-            <FolderArt color={f.color} count={fdocs.length} label={last ? `Updated ${relativeTime(last)}` : 'Empty'} />
+            <Mosaic color={f.color} seed={f.id} className="fc-art">
+              <span className="glass-pill">
+                <b>{store.state.spaces.find((sp) => sp.id === f.spaceId)?.name ?? 'Doku'}</b>
+                <em>{fdocs.length}</em>
+              </span>
+            </Mosaic>
             <div className="folder-meta">
               <h3>{f.name}</h3>
               <p>
-                {fdocs.length} {fdocs.length === 1 ? 'document' : 'documents'}
+                {count(fdocs.length, 'document')}
+                {last ? ` · ${relativeTime(last)}` : ''}
               </p>
             </div>
           </a>
@@ -412,7 +424,9 @@ function FolderGrid({ store, list, onNew }: { store: Store; list: Folder[]; onNe
       })}
       {onNew && (
         <button className="folder-card new" onClick={onNew}>
-          <div className="new-art">{Icon.plus}</div>
+          <div className="new-art">
+            <span className="orb">{Icon.plus}</span>
+          </div>
           <div className="folder-meta">
             <h3>New folder</h3>
             <p>Add a subject</p>
@@ -462,7 +476,7 @@ function RecentDocs({ store }: { store: Store }) {
           return (
             <a key={d.id} className="recent-card" href={`#/doc/${d.id}`}>
               <span className="recent-folder">
-                {f && <span className={`dot dot-${f.color}`} />}
+                {f && <Mosaic color={f.color} seed={d.id} cols={4} rows={4} className="chip-art" />}
                 {f?.name ?? 'No folder'}
               </span>
               <b>{d.title || 'Untitled'}</b>
@@ -536,8 +550,8 @@ function FolderView({ store, folder }: { store: Store; folder: Folder }) {
 
   return (
     <div className="page narrow">
+      <Mosaic color={folder.color} seed={folder.id} cols={24} rows={8} className="hero" />
       <div className="folder-head">
-        <FolderArt color={folder.color} count={docs.length} size="sm" />
         <div className="folder-head-text">
           <input
             className="title-input"
@@ -772,8 +786,11 @@ function DocView({ store, docId }: { store: Store; docId: string }) {
 
   const words = doc.body.trim() ? doc.body.trim().split(/\s+/).length : 0
 
+  const folderColor = folders.find((f) => f.id === doc.folderId)?.color ?? 'grey'
+
   return (
     <article className="page doc-page">
+      <Mosaic color={folderColor} seed={doc.id} cols={20} rows={6} className="doc-banner" />
       <div className="doc-meta">
         <span>
           Edited {relativeTime(doc.updatedAt)} · {count(words, 'word')}
@@ -1025,10 +1042,173 @@ function Checkbox({ done, onToggle, label }: { done: boolean; onToggle: () => vo
   )
 }
 
-/** Clickable checklist under the editor, so to-dos can be ticked without touching the markdown. */
+const CalendarIcon = (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3.5" y="5" width="17" height="15.5" rx="3.5" />
+    <path d="M3.5 10h17M8 3v4M16 3v4" />
+  </svg>
+)
+
+function DueChip({ due, done }: { due: string; done?: boolean }) {
+  const n = daysUntil(due)
+  const tone = done ? '' : n < 0 ? 'overdue' : n === 0 ? 'today' : n === 1 ? 'soon' : ''
+  return (
+    <span className={`due ${tone}`} title={due}>
+      {CalendarIcon}
+      {dueLabel(due)}
+    </span>
+  )
+}
+
+/** Short-lived toast with an Undo button. */
+function useUndo() {
+  const [toast, setToast] = useState<null | { id: number; msg: string; undo: () => void }>(null)
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 6000)
+    return () => clearTimeout(t)
+  }, [toast])
+  const show = useCallback((msg: string, undo: () => void) => setToast({ id: Date.now(), msg, undo }), [])
+  // portalled: an animated (transformed) ancestor would otherwise pin the fixed toast to the page, not the window
+  const el = toast && createPortal(
+    <div className="toast" role="status" key={toast.id}>
+      <span>{toast.msg}</span>
+      <button
+        onClick={() => {
+          toast.undo()
+          setToast(null)
+        }}
+      >
+        Undo
+      </button>
+    </div>,
+    document.body,
+  )
+  return [el, show] as const
+}
+
+/** Runs a change to one doc, offering to put its body back afterwards. */
+function useDocUndo(store: Store) {
+  const [toast, show] = useUndo()
+  const run = (docId: string, msg: string, change: () => void) => {
+    const before = store.state.docs.find((d) => d.id === docId)?.body
+    change()
+    if (before !== undefined) show(msg, () => store.updateDoc(docId, { body: before }))
+  }
+  return [toast, run] as const
+}
+
+/** One to-do: tick it, click the text to edit (Enter saves, Esc cancels, empty deletes), × removes it. */
+function TaskRow({
+  task,
+  docs,
+  onToggle,
+  onEdit,
+  onDelete,
+}: {
+  task: Task
+  docs: Doc[]
+  onToggle: () => void
+  onEdit: (text: string) => void
+  onDelete: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [val, setVal] = useState(task.raw)
+  const cancelled = useRef(false)
+
+  const start = () => {
+    cancelled.current = false
+    setVal(task.raw)
+    setEditing(true)
+  }
+  const commit = () => {
+    setEditing(false)
+    if (cancelled.current) return
+    const v = val.trim()
+    if (!v) onDelete()
+    else if (v !== task.raw) onEdit(v)
+  }
+
+  return (
+    <li className={`${task.done ? 'done' : ''} ${editing ? 'editing' : ''}`}>
+      <Checkbox done={task.done} onToggle={onToggle} label={task.text || 'Empty to-do'} />
+      {editing ? (
+        <input
+          className="task-edit"
+          autoFocus
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          onFocus={(e) => e.currentTarget.setSelectionRange(e.currentTarget.value.length, e.currentTarget.value.length)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur()
+            if (e.key === 'Escape') {
+              e.stopPropagation()
+              cancelled.current = true
+              e.currentTarget.blur()
+            }
+          }}
+          aria-label="Edit to-do"
+        />
+      ) : (
+        <span className="task-text" onClick={start} title="Click to edit">
+          {task.text ? <TaskText text={task.text} docs={docs} /> : <i>Empty to-do</i>}
+          {task.due && <DueChip due={task.due} done={task.done} />}
+        </span>
+      )}
+      <button className="task-del" onMouseDown={(e) => e.preventDefault()} onClick={onDelete} aria-label="Delete to-do" title="Delete">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <path d="M6 6l12 12M18 6 6 18" />
+        </svg>
+      </button>
+    </li>
+  )
+}
+
+/** Input that adds a to-do on Enter and previews the due date it picked up. */
+function TaskInput({
+  onAdd,
+  placeholder,
+  inputRef,
+  children,
+  className = '',
+}: {
+  onAdd: (text: string) => void
+  placeholder: string
+  inputRef?: React.RefObject<HTMLInputElement>
+  children?: React.ReactNode
+  className?: string
+}) {
+  const [draft, setDraft] = useState('')
+  const preview = useMemo(() => /@(\d{4}-\d{2}-\d{2})(?=\s|$)/.exec(normalizeDates(draft))?.[1], [draft])
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!draft.trim()) return
+    onAdd(draft)
+    setDraft('')
+  }
+  return (
+    <form className={`task-input ${className}`} onSubmit={submit}>
+      <span className="checkbox ghost" aria-hidden />
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => e.key === 'Escape' && (setDraft(''), e.currentTarget.blur())}
+        placeholder={placeholder}
+        aria-label="New to-do"
+      />
+      {preview && <DueChip due={preview} />}
+      {children}
+    </form>
+  )
+}
+
+/** Clickable checklist under the editor, so to-dos can be ticked, edited and added without touching the markdown. */
 function DocTasks({ store, doc }: { store: Store; doc: Doc }) {
+  const [toast, withUndo] = useDocUndo(store)
   const tasks = parseTasks(doc)
-  if (!tasks.length) return null
+  if (!tasks.length) return toast
   const done = tasks.filter((t) => t.done).length
   return (
     <section className="doc-tasks">
@@ -1037,7 +1217,7 @@ function DocTasks({ store, doc }: { store: Store; doc: Doc }) {
           To-dos <span>{done}/{tasks.length}</span>
         </h4>
         {done > 0 && (
-          <button className="link-btn" onClick={() => store.clearDone(doc.id)}>
+          <button className="link-btn" onClick={() => withUndo(doc.id, `Cleared ${count(done, 'to-do')}`, () => store.clearDone(doc.id))}>
             Clear completed
           </button>
         )}
@@ -1045,40 +1225,78 @@ function DocTasks({ store, doc }: { store: Store; doc: Doc }) {
       <Progress done={done} total={tasks.length} />
       <ul className="task-list">
         {tasks.map((t) => (
-          <li key={t.line} className={t.done ? 'done' : ''}>
-            <Checkbox done={t.done} onToggle={() => store.toggleTask(doc.id, t.line)} label={t.text || 'Empty to-do'} />
-            <span className="task-text">{t.text ? <TaskText text={t.text} docs={store.state.docs} /> : <i>Empty to-do</i>}</span>
-          </li>
+          <TaskRow
+            key={t.line}
+            task={t}
+            docs={store.state.docs}
+            onToggle={() => store.toggleTask(doc.id, t.line)}
+            onEdit={(text) => store.editTask(doc.id, t.line, text)}
+            onDelete={() => withUndo(doc.id, 'To-do deleted', () => store.editTask(doc.id, t.line, ''))}
+          />
         ))}
       </ul>
+      <TaskInput className="inline" placeholder="Add a to-do…" onAdd={(text) => store.addTask(doc.id, text)} />
+      {toast}
     </section>
   )
 }
 
-type TaskFilter = 'open' | 'done' | 'all'
+type TaskFilter = 'today' | 'open' | 'done' | 'all'
 
 function TasksView({ store }: { store: Store }) {
   const { docs, folders } = store.state
-  const [filter, setFilter] = useState<TaskFilter>('open')
-  const [draft, setDraft] = useState('')
-  // ticked while on "Open" → keep showing until the filter changes, so rows don't jump out from under the cursor
+  const [filter, setFilterState] = useState<TaskFilter>(() => {
+    const f = localStorage.getItem('dok:taskFilter')
+    return f === 'today' || f === 'done' || f === 'all' ? f : 'open'
+  })
+  const setFilter = (f: TaskFilter) => {
+    setFilterState(f)
+    try {
+      localStorage.setItem('dok:taskFilter', f)
+    } catch {
+      /* ignore */
+    }
+  }
+  const [toast, withUndo] = useDocUndo(store)
+  const addRef = useRef<HTMLInputElement>(null)
+
+  // ticked while on Open/Today → keep showing until the filter changes, so rows don't jump out from under the cursor
   const [lingering, setLingering] = useState<Set<string>>(new Set())
   useEffect(() => setLingering(new Set()), [filter])
 
+  // N focuses the add box
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement
+      if (e.metaKey || e.ctrlKey || e.altKey || el.closest('input, textarea, select, [contenteditable]')) return
+      if (e.key.toLowerCase() === 'n') {
+        e.preventDefault()
+        addRef.current?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // stable order (newest note first) so ticking a to-do doesn't make its note jump to the top
   const withTasks = useMemo(
     () =>
       docs
         .map((d) => ({ doc: d, tasks: parseTasks(d) }))
         .filter((x) => x.tasks.length)
-        .sort((a, b) => b.doc.updatedAt - a.doc.updatedAt),
+        .sort((a, b) => b.doc.createdAt - a.doc.createdAt),
     [docs],
   )
-  const total = withTasks.reduce((n, x) => n + x.tasks.length, 0)
-  const done = withTasks.reduce((n, x) => n + x.tasks.filter((t) => t.done).length, 0)
+  const all = withTasks.flatMap((x) => x.tasks)
+  const total = all.length
+  const done = all.filter((t) => t.done).length
+  const isToday = (t: Task) => !t.done && !!t.due && daysUntil(t.due) <= 0
+  const todayCount = all.filter(isToday).length
 
   // where quick-add goes: remembered choice, else the most recently edited doc with to-dos, else any doc
   const [targetId, setTargetId] = useState<string>(() => localStorage.getItem('dok:taskTarget') ?? '')
-  const target = docs.find((d) => d.id === targetId) ?? withTasks[0]?.doc ?? docs[0]
+  const recentWithTasks = useMemo(() => [...withTasks].sort((a, b) => b.doc.updatedAt - a.doc.updatedAt), [withTasks])
+  const target = docs.find((d) => d.id === targetId) ?? recentWithTasks[0]?.doc ?? docs[0]
   const chooseTarget = (id: string) => {
     setTargetId(id)
     try {
@@ -1088,30 +1306,34 @@ function TasksView({ store }: { store: Store }) {
     }
   }
 
-  const add = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!target || !draft.trim()) return
-    store.addTask(target.id, draft)
-    setDraft('')
+  const add = (text: string) => {
+    if (!target) return
+    // on Today, an undated to-do would vanish on add, so date it today
+    const t = filter === 'today' && !/@\S/.test(text) ? `${text} @today` : text
+    store.addTask(target.id, t)
     if (filter === 'done') setFilter('open')
   }
 
-  const key = (docId: string, line: number) => docId + ':' + line
-  const toggle = (docId: string, line: number, wasDone: boolean) => {
-    if (filter === 'open' && !wasDone) setLingering((s) => new Set(s).add(key(docId, line)))
-    store.toggleTask(docId, line)
+  const key = (t: Task) => t.docId + ':' + t.line
+  const toggle = (t: Task) => {
+    if ((filter === 'open' || filter === 'today') && !t.done) setLingering((s) => new Set(s).add(key(t)))
+    store.toggleTask(t.docId, t.line)
   }
 
-  const groups = withTasks
-    .map((x) => ({
-      ...x,
-      shown: x.tasks.filter((t) =>
-        filter === 'all' ? true : filter === 'done' ? t.done : !t.done || lingering.has(key(t.docId, t.line)),
-      ),
-    }))
-    .filter((x) => x.shown.length)
+  const visible = (t: Task) =>
+    lingering.has(key(t)) ||
+    (filter === 'all' ? true : filter === 'done' ? t.done : filter === 'today' ? isToday(t) : !t.done)
+
+  const groups = withTasks.map((x) => ({ ...x, shown: x.tasks.filter(visible) })).filter((x) => x.shown.length)
 
   const folderOf = (id: string) => folders.find((f) => f.id === id)
+
+  const tabs: { id: TaskFilter; label: string; n: number }[] = [
+    { id: 'today', label: 'Today', n: todayCount },
+    { id: 'open', label: 'Open', n: total - done },
+    { id: 'done', label: 'Done', n: done },
+    { id: 'all', label: 'All', n: total },
+  ]
 
   return (
     <div className="page narrow">
@@ -1119,27 +1341,28 @@ function TasksView({ store }: { store: Store }) {
         <div>
           <h1>Tasks</h1>
           <p className="subhead">
-            {total ? `${total - done} open · ${done} done` : 'To-dos from every note, in one place'}
+            {total
+              ? `${total - done} open · ${done} done${todayCount ? ` · ${todayCount} due today` : ''}`
+              : 'To-dos from every note, in one place'}
           </p>
         </div>
       </div>
       {total > 0 && <Progress done={done} total={total} />}
 
       {docs.length > 0 && (
-        <form className="quick-add" onSubmit={add}>
-          <span className="checkbox ghost" aria-hidden />
-          <input
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="Add a to-do…"
-            aria-label="New to-do"
-          />
+        <TaskInput
+          className="quick-add"
+          inputRef={addRef}
+          onAdd={add}
+          placeholder={filter === 'today' ? 'Add a to-do for today…' : 'Add a to-do…  try @tomorrow or @fri'}
+        >
+          <kbd className="quick-kbd">N</kbd>
           <label className="move-select" title="Add to note">
             {Icon.doc}
             <select value={target?.id} onChange={(e) => chooseTarget(e.target.value)} aria-label="Add to note">
-              {withTasks.length > 0 && (
+              {recentWithTasks.length > 0 && (
                 <optgroup label="Notes with to-dos">
-                  {withTasks.map(({ doc }) => (
+                  {recentWithTasks.map(({ doc }) => (
                     <option key={doc.id} value={doc.id}>
                       {doc.title || 'Untitled'}
                     </option>
@@ -1157,16 +1380,15 @@ function TasksView({ store }: { store: Store }) {
               </optgroup>
             </select>
           </label>
-          <button className="btn" disabled={!draft.trim()}>
-            Add
-          </button>
-        </form>
+          <button className="btn">Add</button>
+        </TaskInput>
       )}
 
       <div className="segmented" role="tablist">
-        {(['open', 'done', 'all'] as const).map((f) => (
-          <button key={f} role="tab" aria-selected={filter === f} className={filter === f ? 'on' : ''} onClick={() => setFilter(f)}>
-            {f === 'open' ? `Open ${total - done}` : f === 'done' ? `Done ${done}` : `All ${total}`}
+        {tabs.map((t) => (
+          <button key={t.id} role="tab" aria-selected={filter === t.id} className={filter === t.id ? 'on' : ''} onClick={() => setFilter(t.id)}>
+            {t.label}
+            <span className={t.id === 'today' && t.n ? 'hot' : ''}>{t.n}</span>
           </button>
         ))}
       </div>
@@ -1177,6 +1399,8 @@ function TasksView({ store }: { store: Store }) {
             <p>
               No to-dos yet. Add one above, or type <code>- [ ]</code> in any note.
             </p>
+          ) : filter === 'today' ? (
+            <p>Nothing due today. Add <code>@today</code> to a to-do to plan it here.</p>
           ) : filter === 'open' ? (
             <p>All done. Nice.</p>
           ) : (
@@ -1198,24 +1422,35 @@ function TasksView({ store }: { store: Store }) {
                 <span className="task-count">
                   {d}/{tasks.length}
                 </span>
-                {filter !== 'open' && d > 0 && (
-                  <button className="link-btn" onClick={() => store.clearDone(doc.id)}>
+                {d > 0 && (
+                  <button
+                    className="link-btn"
+                    onClick={() => withUndo(doc.id, `Cleared ${count(d, 'to-do')}`, () => store.clearDone(doc.id))}
+                  >
                     Clear completed
                   </button>
                 )}
               </div>
               <ul className="task-list">
                 {shown.map((t) => (
-                  <li key={t.line} className={t.done ? 'done' : ''}>
-                    <Checkbox done={t.done} onToggle={() => toggle(doc.id, t.line, t.done)} label={t.text || 'Empty to-do'} />
-                    <span className="task-text">{t.text ? <TaskText text={t.text} docs={docs} /> : <i>Empty to-do</i>}</span>
-                  </li>
+                  <TaskRow
+                    key={t.line}
+                    task={t}
+                    docs={docs}
+                    onToggle={() => toggle(t)}
+                    onEdit={(text) => store.editTask(doc.id, t.line, text)}
+                    onDelete={() => {
+                      setLingering(new Set())
+                      withUndo(doc.id, 'To-do deleted', () => store.editTask(doc.id, t.line, ''))
+                    }}
+                  />
                 ))}
               </ul>
             </section>
           )
         })
       )}
+      {toast}
     </div>
   )
 }
@@ -1254,7 +1489,12 @@ function NewFolderDialog({
     <div className="dialog-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <form className="dialog" onSubmit={submit}>
         <div className="dialog-art">
-          <FolderArt color={color} count={0} label={name || 'New folder'} />
+          <Mosaic color={color} seed="new-folder" className="fc-art">
+            <span className="glass-pill">
+              <b>{name || 'New folder'}</b>
+              <em>0</em>
+            </span>
+          </Mosaic>
         </div>
         <label>
           <span>Name</span>
