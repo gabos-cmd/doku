@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Logo, COLORS } from './FolderArt'
-import { Mosaic } from './Mosaic'
+import { FolderArt, Logo, COLORS } from './FolderArt'
 import { GraphView } from './Graph'
 import {
   demoState,
@@ -406,17 +405,11 @@ function FolderGrid({ store, list, onNew }: { store: Store; list: Folder[]; onNe
         const last = Math.max(0, ...fdocs.map((d) => d.updatedAt))
         return (
           <a key={f.id} className="folder-card" href={`#/folder/${f.id}`}>
-            <Mosaic color={f.color} seed={f.id} className="fc-art">
-              <span className="glass-pill">
-                <b>{store.state.spaces.find((sp) => sp.id === f.spaceId)?.name ?? 'Doku'}</b>
-                <em>{fdocs.length}</em>
-              </span>
-            </Mosaic>
+            <FolderArt color={f.color} count={fdocs.length} label={last ? `Updated ${relativeTime(last)}` : 'Empty'} />
             <div className="folder-meta">
               <h3>{f.name}</h3>
               <p>
-                {count(fdocs.length, 'document')}
-                {last ? ` · ${relativeTime(last)}` : ''}
+                {fdocs.length} {fdocs.length === 1 ? 'document' : 'documents'}
               </p>
             </div>
           </a>
@@ -424,9 +417,7 @@ function FolderGrid({ store, list, onNew }: { store: Store; list: Folder[]; onNe
       })}
       {onNew && (
         <button className="folder-card new" onClick={onNew}>
-          <div className="new-art">
-            <span className="orb">{Icon.plus}</span>
-          </div>
+          <div className="new-art">{Icon.plus}</div>
           <div className="folder-meta">
             <h3>New folder</h3>
             <p>Add a subject</p>
@@ -476,7 +467,7 @@ function RecentDocs({ store }: { store: Store }) {
           return (
             <a key={d.id} className="recent-card" href={`#/doc/${d.id}`}>
               <span className="recent-folder">
-                {f && <Mosaic color={f.color} seed={d.id} cols={4} rows={4} className="chip-art" />}
+                {f && <span className={`dot dot-${f.color}`} />}
                 {f?.name ?? 'No folder'}
               </span>
               <b>{d.title || 'Untitled'}</b>
@@ -550,8 +541,8 @@ function FolderView({ store, folder }: { store: Store; folder: Folder }) {
 
   return (
     <div className="page narrow">
-      <Mosaic color={folder.color} seed={folder.id} cols={24} rows={8} className="hero" />
       <div className="folder-head">
+        <FolderArt color={folder.color} count={docs.length} size="sm" />
         <div className="folder-head-text">
           <input
             className="title-input"
@@ -786,11 +777,8 @@ function DocView({ store, docId }: { store: Store; docId: string }) {
 
   const words = doc.body.trim() ? doc.body.trim().split(/\s+/).length : 0
 
-  const folderColor = folders.find((f) => f.id === doc.folderId)?.color ?? 'grey'
-
   return (
     <article className="page doc-page">
-      <Mosaic color={folderColor} seed={doc.id} cols={20} rows={6} className="doc-banner" />
       <div className="doc-meta">
         <span>
           Edited {relativeTime(doc.updatedAt)} · {count(words, 'word')}
@@ -1489,12 +1477,7 @@ function NewFolderDialog({
     <div className="dialog-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <form className="dialog" onSubmit={submit}>
         <div className="dialog-art">
-          <Mosaic color={color} seed="new-folder" className="fc-art">
-            <span className="glass-pill">
-              <b>{name || 'New folder'}</b>
-              <em>0</em>
-            </span>
-          </Mosaic>
+          <FolderArt color={color} count={0} label={name || 'New folder'} />
         </div>
         <label>
           <span>Name</span>
