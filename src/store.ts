@@ -61,7 +61,7 @@ function seed(): State {
     d('f-math', 'Derivatives — chain rule', 'If y = f(g(x)), then dy/dx = f\'(g(x)) · g\'(x).\n\nBuilds on [[Limits recap]]. Practice: differentiate sin(x²).', 2 * 3_600_000),
     d('f-math', 'Limits recap', 'A limit describes the value a function approaches as the input approaches some value.', DAY + 3_600_000),
     d('f-math', 'Integration by parts', '∫u dv = uv − ∫v du\n\nThe reverse of the product rule — see [[Derivatives — chain rule]].', 3 * DAY),
-    d('f-math', 'Exam prep checklist', 'Chapters 3–6. Past papers 2023, 2024.\n\nReview [[Integration by parts]] and [[Vectors intro]].', 12 * DAY),
+    d('f-math', 'Exam prep checklist', 'Chapters 3–6. Past papers 2023, 2024.\n\n- [x] Past paper 2023\n- [ ] Past paper 2024\n- [ ] Review [[Integration by parts]]\n- [ ] Review [[Vectors intro]]', 12 * DAY),
     d('f-math', 'Vectors intro', 'Magnitude, direction, dot product.', 40 * DAY),
     d('f-history', 'The Industrial Revolution', 'Began in Britain around 1760.', 5 * 3_600_000),
     d('f-history', 'Cold War timeline', '1947 — Truman Doctrine\n1961 — Berlin Wall', 6 * DAY),
@@ -70,20 +70,55 @@ function seed(): State {
     d('f-design', 'Typography notes', 'Pair a serif display face with a neutral sans for UI.', DAY),
     d('f-code', 'Git cheatsheet', 'git switch -c feature\ngit rebase main', 9 * DAY),
     d('f-journal', 'Sunday', 'Long walk, good coffee.', 2 * DAY),
-    d('f-ideas', 'Dok roadmap', 'To-do blocks, images, nested folders.\n\nType inspiration: [[Typography notes]].', 60 * 60_000),
+    d('f-ideas', 'Dok roadmap', '- [x] To-do blocks\n- [ ] Images\n- [ ] Nested folders\n\nType inspiration: [[Typography notes]].', 60 * 60_000),
+    d('f-journal', 'This week', '- [ ] Call grandma\n- [ ] Library books due\n- [x] Buy running shoes', 4 * 3_600_000),
   ]
+  return { spaces, folders, docs }
+}
+
+/** Accepts anything parsed from JSON and returns a valid State, or null. */
+export function sanitize(raw: unknown): State | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as Partial<State>
+  if (!Array.isArray(r.spaces) || !Array.isArray(r.folders) || !Array.isArray(r.docs)) return null
+  const str = (v: unknown, d = '') => (typeof v === 'string' ? v : d)
+  const num = (v: unknown) => (typeof v === 'number' && isFinite(v) ? v : Date.now())
+  const colors: FolderColor[] = ['blue', 'yellow', 'lavender', 'green', 'pink', 'grey', 'orange']
+  const spaces = r.spaces.filter((s) => s && typeof s.id === 'string').map((s) => ({ id: s.id, name: str(s.name, 'Space') }))
+  const folders = r.folders
+    .filter((f) => f && typeof f.id === 'string')
+    .map((f) => ({
+      id: f.id,
+      spaceId: str(f.spaceId),
+      name: str(f.name, 'Folder'),
+      color: colors.includes(f.color) ? f.color : 'grey',
+      favorite: !!f.favorite,
+      createdAt: num(f.createdAt),
+    }))
+  const docs = r.docs
+    .filter((d) => d && typeof d.id === 'string')
+    .map((d) => ({
+      id: d.id,
+      folderId: str(d.folderId),
+      title: str(d.title),
+      body: str(d.body),
+      createdAt: num(d.createdAt),
+      updatedAt: num(d.updatedAt),
+    }))
   return { spaces, folders, docs }
 }
 
 function load(): State {
   try {
     const raw = localStorage.getItem(KEY)
-    if (raw) return JSON.parse(raw) as State
+    if (raw) return sanitize(JSON.parse(raw)) ?? seed()
   } catch {
     /* ignore */
   }
   return seed()
 }
+
+export const demoState = seed
 
 export function useStore() {
   const [state, setState] = useState<State>(load)
@@ -100,6 +135,21 @@ export function useStore() {
     const space = { id: uid(), name }
     setState((s) => ({ ...s, spaces: [...s.spaces, space] }))
     return space
+  }, [])
+
+  const updateSpace = useCallback((id: string, patch: Partial<Space>) => {
+    setState((s) => ({ ...s, spaces: s.spaces.map((x) => (x.id === id ? { ...x, ...patch } : x)) }))
+  }, [])
+
+  const deleteSpace = useCallback((id: string) => {
+    setState((s) => {
+      const gone = new Set(s.folders.filter((f) => f.spaceId === id).map((f) => f.id))
+      return {
+        spaces: s.spaces.filter((x) => x.id !== id),
+        folders: s.folders.filter((f) => !gone.has(f.id)),
+        docs: s.docs.filter((d) => !gone.has(d.folderId)),
+      }
+    })
   }, [])
 
   const addFolder = useCallback((spaceId: string, name: string, color: FolderColor) => {
@@ -120,9 +170,9 @@ export function useStore() {
     }))
   }, [])
 
-  const addDoc = useCallback((folderId: string) => {
+  const addDoc = useCallback((folderId: string, title = '', body = '') => {
     const now = Date.now()
-    const doc: Doc = { id: uid(), folderId, title: '', body: '', createdAt: now, updatedAt: now }
+    const doc: Doc = { id: uid(), folderId, title, body, createdAt: now, updatedAt: now }
     setState((s) => ({ ...s, docs: [doc, ...s.docs] }))
     return doc
   }, [])
@@ -138,10 +188,96 @@ export function useStore() {
     setState((s) => ({ ...s, docs: s.docs.filter((d) => d.id !== id) }))
   }, [])
 
-  return { state, addSpace, addFolder, updateFolder, deleteFolder, addDoc, updateDoc, deleteDoc }
+  /** After a doc's title changes from `from` to `to`, rewrite every [[from]] reference so links keep working. */
+  const relink = useCallback((docId: string, from: string, to: string) => {
+    const a = from.trim()
+    const b = to.trim()
+    if (!a || !b || a === b) return
+    setState((s) => {
+      // another note still owns the old title → those links are not ours to move
+      if (s.docs.some((d) => d.id !== docId && d.title.trim().toLowerCase() === a.toLowerCase())) return s
+      const re = new RegExp(`\\[\\[\\s*${escapeRe(a)}\\s*\\]\\]`, 'gi')
+      let changed = false
+      const docs = s.docs.map((d) => {
+        const body = d.body.replace(re, `[[${b}]]`)
+        if (body === d.body) return d
+        changed = true
+        return { ...d, body }
+      })
+      return changed ? { ...s, docs } : s
+    })
+  }, [])
+
+  /** Flip the checkbox on line `line` of a doc's body. */
+  const toggleTask = useCallback((docId: string, line: number) => {
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) => {
+        if (d.id !== docId) return d
+        const lines = d.body.split('\n')
+        const m = TASK_RE.exec(lines[line] ?? '')
+        if (!m) return d
+        lines[line] = m[1] + (m[2] === ' ' ? 'x' : ' ') + m[3]
+        return { ...d, body: lines.join('\n'), updatedAt: Date.now() }
+      }),
+    }))
+  }, [])
+
+  /** Append a new open to-do to the end of a doc's body. */
+  const addTask = useCallback((docId: string, text: string) => {
+    const t = text.trim()
+    if (!t) return
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) => {
+        if (d.id !== docId) return d
+        const body = d.body.replace(/\s+$/, '')
+        const lastIsTask = TASK_RE.test(body.split('\n').pop() ?? '')
+        const sep = !body ? '' : lastIsTask ? '\n' : '\n\n'
+        return { ...d, body: `${body}${sep}- [ ] ${t}`, updatedAt: Date.now() }
+      }),
+    }))
+  }, [])
+
+  /** Remove every checked to-do line from a doc. */
+  const clearDone = useCallback((docId: string) => {
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) => {
+        if (d.id !== docId) return d
+        const body = d.body
+          .split('\n')
+          .filter((l) => !(TASK_RE.exec(l)?.[2] ?? ' ').trim())
+          .join('\n')
+        return body === d.body ? d : { ...d, body, updatedAt: Date.now() }
+      }),
+    }))
+  }, [])
+
+  const replaceAll = useCallback((next: State) => setState(next), [])
+
+  return {
+    state,
+    addSpace,
+    updateSpace,
+    deleteSpace,
+    addFolder,
+    updateFolder,
+    deleteFolder,
+    addDoc,
+    updateDoc,
+    relink,
+    deleteDoc,
+    toggleTask,
+    addTask,
+    clearDone,
+    replaceAll,
+  }
 }
 
 export type Store = ReturnType<typeof useStore>
+
+const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 /* ---------- date helpers ---------- */
 
@@ -200,4 +336,30 @@ export function docLinks(docs: Doc[]): [string, string][] {
     }
   }
   return out
+}
+
+/* ---------- to-dos: `- [ ] task` lines inside a doc ---------- */
+
+/** groups: 1 = prefix up to the box's inner char, 2 = ' ' or 'x', 3 = '] ' + text */
+export const TASK_RE = /^(\s*[-*+]\s+\[)([ xX])(\]\s.*|\])$/
+
+export interface Task {
+  docId: string
+  line: number
+  text: string
+  done: boolean
+}
+
+export function parseTasks(doc: Doc): Task[] {
+  const out: Task[] = []
+  doc.body.split('\n').forEach((l, i) => {
+    const m = TASK_RE.exec(l)
+    if (m) out.push({ docId: doc.id, line: i, text: m[3].slice(1).trim(), done: m[2] !== ' ' })
+  })
+  return out
+}
+
+export function taskStats(doc: Doc) {
+  const t = parseTasks(doc)
+  return { total: t.length, done: t.filter((x) => x.done).length }
 }
