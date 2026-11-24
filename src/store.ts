@@ -25,10 +25,18 @@ export interface Doc {
   updatedAt: number
 }
 
+/** A column on the Tasks board. To-dos join it with a `#tag` (the slugified name) on their line. */
+export interface Section {
+  id: string
+  name: string
+  color: FolderColor
+}
+
 export interface State {
   spaces: Space[]
   folders: Folder[]
   docs: Doc[]
+  sections?: Section[]
 }
 
 const KEY = 'dok:v1'
@@ -61,7 +69,7 @@ function seed(): State {
     d('f-math', 'Derivatives — chain rule', 'If y = f(g(x)), then dy/dx = f\'(g(x)) · g\'(x).\n\nBuilds on [[Limits recap]]. Practice: differentiate sin(x²).', 2 * 3_600_000),
     d('f-math', 'Limits recap', 'A limit describes the value a function approaches as the input approaches some value.', DAY + 3_600_000),
     d('f-math', 'Integration by parts', '∫u dv = uv − ∫v du\n\nThe reverse of the product rule — see [[Derivatives — chain rule]].', 3 * DAY),
-    d('f-math', 'Exam prep checklist', 'Chapters 3–6. Past papers 2023, 2024.\n\n- [x] Past paper 2023\n- [ ] Past paper 2024 @tomorrow\n- [ ] Review [[Integration by parts]]\n- [ ] Review [[Vectors intro]]', 12 * DAY),
+    d('f-math', 'Exam prep checklist', 'Chapters 3–6. Past papers 2023, 2024.\n\n- [x] Past paper 2023\n- [ ] Past paper 2024 @tomorrow #study\n- [ ] Review [[Integration by parts]] #study\n- [ ] Review [[Vectors intro]]', 12 * DAY),
     d('f-math', 'Vectors intro', 'Magnitude, direction, dot product.', 40 * DAY),
     d('f-history', 'The Industrial Revolution', 'Began in Britain around 1760.', 5 * 3_600_000),
     d('f-history', 'Cold War timeline', '1947 — Truman Doctrine\n1961 — Berlin Wall', 6 * DAY),
@@ -70,10 +78,15 @@ function seed(): State {
     d('f-design', 'Typography notes', 'Pair a serif display face with a neutral sans for UI.', DAY),
     d('f-code', 'Git cheatsheet', 'git switch -c feature\ngit rebase main', 9 * DAY),
     d('f-journal', 'Sunday', 'Long walk, good coffee.', 2 * DAY),
-    d('f-ideas', 'Dok roadmap', '- [x] To-do blocks\n- [ ] Images\n- [ ] Nested folders\n\nType inspiration: [[Typography notes]].', 60 * 60_000),
-    d('f-journal', 'This week', '- [ ] Call grandma\n- [ ] Library books due @today\n- [x] Buy running shoes', 4 * 3_600_000),
+    d('f-ideas', 'Dok roadmap', '- [x] To-do blocks\n- [ ] Images\n- [ ] Nested folders #someday\n\nType inspiration: [[Typography notes]].', 60 * 60_000),
+    d('f-journal', 'This week', '- [ ] Call grandma\n- [ ] Library books due @today #errands\n- [x] Buy running shoes #errands', 4 * 3_600_000),
   ]
-  return { spaces, folders, docs }
+  const sections: Section[] = [
+    { id: 'sec-study', name: 'Study', color: 'blue' },
+    { id: 'sec-errands', name: 'Errands', color: 'orange' },
+    { id: 'sec-someday', name: 'Someday', color: 'lavender' },
+  ]
+  return { spaces, folders, docs, sections }
 }
 
 /** Accepts anything parsed from JSON and returns a valid State, or null. */
@@ -105,7 +118,10 @@ export function sanitize(raw: unknown): State | null {
       createdAt: num(d.createdAt),
       updatedAt: num(d.updatedAt),
     }))
-  return { spaces, folders, docs }
+  const sections = (Array.isArray(r.sections) ? r.sections : [])
+    .filter((x) => x && typeof x.id === 'string')
+    .map((x) => ({ id: x.id, name: str(x.name, 'Section'), color: colors.includes(x.color) ? x.color : 'grey' }))
+  return { spaces, folders, docs, sections }
 }
 
 function load(): State {
@@ -257,6 +273,63 @@ export function useStore() {
     }))
   }, [])
 
+  /** Put a to-do in a section (or back in Inbox with null) by rewriting its #tag. */
+  const setTaskSection = useCallback((docId: string, line: number, tag: string | null) => {
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) => {
+        if (d.id !== docId) return d
+        const lines = d.body.split('\n')
+        const m = TASK_RE.exec(lines[line] ?? '')
+        if (!m) return d
+        const text = stripTag(m[3].slice(1))
+        lines[line] = `${m[1]}${m[2]}] ${text}${tag ? ` #${tag}` : ''}`
+        const body = lines.join('\n')
+        return body === d.body ? d : { ...d, body, updatedAt: Date.now() }
+      }),
+    }))
+  }, [])
+
+  const addSection = useCallback((name: string, color: FolderColor) => {
+    const section: Section = { id: uid(), name: name.trim(), color }
+    setState((s) => ({ ...s, sections: [...(s.sections ?? []), section] }))
+    return section
+  }, [])
+
+  /** Rename (and re-tag every to-do in it), recolor, or reorder a section. */
+  const updateSection = useCallback((id: string, patch: Partial<Section>) => {
+    setState((s) => {
+      const list = s.sections ?? []
+      const old = list.find((x) => x.id === id)
+      if (!old) return s
+      const next = { ...old, ...patch }
+      const from = slugify(old.name)
+      const to = slugify(next.name)
+      const docs = from && to && from !== to ? retag(s.docs, from, to) : s.docs
+      return { ...s, docs, sections: list.map((x) => (x.id === id ? next : x)) }
+    })
+  }, [])
+
+  const moveSection = useCallback((id: string, dir: -1 | 1) => {
+    setState((s) => {
+      const list = [...(s.sections ?? [])]
+      const i = list.findIndex((x) => x.id === id)
+      const j = i + dir
+      if (i < 0 || j < 0 || j >= list.length) return s
+      ;[list[i], list[j]] = [list[j], list[i]]
+      return { ...s, sections: list }
+    })
+  }, [])
+
+  /** Remove a section; its to-dos lose the tag and land back in Inbox. */
+  const deleteSection = useCallback((id: string) => {
+    setState((s) => {
+      const sec = (s.sections ?? []).find((x) => x.id === id)
+      if (!sec) return s
+      return { ...s, docs: retag(s.docs, slugify(sec.name), null), sections: (s.sections ?? []).filter((x) => x.id !== id) }
+    })
+  }, [])
+
   /** Remove every checked to-do line from a doc. */
   const clearDone = useCallback((docId: string) => {
     setState((s) => ({
@@ -290,6 +363,11 @@ export function useStore() {
     addTask,
     clearDone,
     editTask,
+    setTaskSection,
+    addSection,
+    updateSection,
+    moveSection,
+    deleteSection,
     replaceAll,
   }
 }
@@ -372,6 +450,8 @@ export interface Task {
   done: boolean
   /** YYYY-MM-DD */
   due?: string
+  /** section tag (slug), without the # */
+  section?: string
 }
 
 export function parseTasks(doc: Doc): Task[] {
@@ -381,8 +461,12 @@ export function parseTasks(doc: Doc): Task[] {
     if (!m) return
     const raw = m[3].slice(1).trim()
     const dm = DUE_RE.exec(raw)
-    const text = dm ? (raw.slice(0, dm.index) + raw.slice(dm.index + dm[0].length)).replace(/\s{2,}/g, ' ').trim() : raw
-    out.push({ docId: doc.id, line: i, raw, text, done: m[2] !== ' ', due: dm?.[2] })
+    const tm = TAG_RE.exec(raw)
+    let text = raw
+    if (dm) text = text.replace(dm[0], dm[1])
+    if (tm) text = text.replace(TAG_RE, '$1')
+    text = text.replace(/\s{2,}/g, ' ').trim()
+    out.push({ docId: doc.id, line: i, raw, text, done: m[2] !== ' ', due: dm?.[2], section: tm?.[2].toLowerCase() })
   })
   return out
 }
@@ -441,4 +525,37 @@ export function dueLabel(due: string): string {
   const date = new Date(y, m - 1, d)
   if (n > 1 && n < 7) return date.toLocaleDateString(undefined, { weekday: 'long' })
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(y !== new Date().getFullYear() ? { year: 'numeric' } : {}) })
+}
+
+/* ---------- sections: `#tag` on a to-do line ---------- */
+
+const TAG_RE = /(^|\s)#([a-z0-9][\w-]*)(?=\s|$)/i
+
+export const slugify = (name: string) =>
+  name
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+
+/** Task text with its first #tag removed. */
+function stripTag(text: string) {
+  return text.replace(TAG_RE, '$1').replace(/\s{2,}/g, ' ').trim()
+}
+
+/** Swap section tag `from` for `to` (or drop it) on every to-do line. */
+function retag(docs: Doc[], from: string, to: string | null): Doc[] {
+  return docs.map((d) => {
+    let changed = false
+    const lines = d.body.split('\n').map((l) => {
+      const m = TASK_RE.exec(l)
+      if (!m) return l
+      const t = TAG_RE.exec(m[3])
+      if (!t || t[2].toLowerCase() !== from) return l
+      changed = true
+      const rest = stripTag(m[3].slice(1))
+      return `${m[1]}${m[2]}] ${rest}${to ? ` #${to}` : ''}`
+    })
+    return changed ? { ...d, body: lines.join('\n'), updatedAt: Date.now() } : d
+  })
 }

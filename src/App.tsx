@@ -15,6 +15,8 @@ import {
   daysUntil,
   dueLabel,
   normalizeDates,
+  slugify,
+  type Section,
   type Task,
   useStore,
   type Doc,
@@ -1229,6 +1231,399 @@ function DocTasks({ store, doc }: { store: Store; doc: Doc }) {
   )
 }
 
+/* ---------- tasks board: one column per section, a card per to-do ---------- */
+
+const BoardIcon = {
+  trash: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4.5 6.5h15M9.5 6.5V4h5v2.5M6.5 6.5l1 13.5h9l1-13.5" />
+    </svg>
+  ),
+  pencil: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15.5 4.5 19.5 8.5 8.5 19.5H4.5v-4z" />
+      <path d="m13 7 4 4" />
+    </svg>
+  ),
+  arrow: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4.5 12h15M13.5 6l6 6-6 6" />
+    </svg>
+  ),
+  left: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m14.5 6-6 6 6 6" />
+    </svg>
+  ),
+  right: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m9.5 6 6 6-6 6" />
+    </svg>
+  ),
+  x: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  ),
+}
+
+/** Rebuild a to-do's raw text from edited words, keeping its date and section unless the edit brings its own. */
+function composeTask(text: string, t: Task) {
+  let out = text.trim()
+  if (!out) return ''
+  if (t.due && !/(^|\s)@\S/.test(out)) out += ` @${t.due}`
+  if (t.section && !/(^|\s)#\S/.test(out)) out += ` #${t.section}`
+  return out
+}
+
+type Column = { key: string; tag: string | null; name: string; color: FolderColor; section?: Section }
+
+function TaskCard({
+  task,
+  store,
+  onToggle,
+  onDelete,
+}: {
+  task: Task
+  store: Store
+  onToggle: () => void
+  onDelete: () => void
+}) {
+  const { docs, folders } = store.state
+  const doc = docs.find((d) => d.id === task.docId)!
+  const folder = folders.find((f) => f.id === doc.folderId)
+  const [editing, setEditing] = useState(false)
+  const [val, setVal] = useState(task.text)
+  const cancelled = useRef(false)
+  const [dragging, setDragging] = useState(false)
+
+  const start = () => {
+    cancelled.current = false
+    setVal(task.text)
+    setEditing(true)
+  }
+  const commit = () => {
+    setEditing(false)
+    if (cancelled.current) return
+    if (!val.trim()) return onDelete()
+    if (val.trim() !== task.text) store.editTask(task.docId, task.line, composeTask(val, task))
+  }
+
+  const n = task.due ? daysUntil(task.due) : null
+  const tone = task.done || n === null ? '' : n < 0 ? 'overdue' : n === 0 ? 'today' : n === 1 ? 'soon' : ''
+
+  return (
+    <article
+      className={`tcard ${task.done ? 'done' : ''} ${dragging ? 'dragging' : ''}`}
+      draggable={!editing}
+      onDragStart={(e) => {
+        e.dataTransfer.setData('application/x-dok-task', JSON.stringify({ docId: task.docId, line: task.line }))
+        e.dataTransfer.effectAllowed = 'move'
+        setDragging(true)
+      }}
+      onDragEnd={() => setDragging(false)}
+    >
+      <header className="tcard-head">
+        {editing ? (
+          <textarea
+            className="tcard-edit"
+            autoFocus
+            rows={2}
+            value={val}
+            onChange={(e) => setVal(e.target.value)}
+            onFocus={(e) => e.currentTarget.setSelectionRange(e.currentTarget.value.length, e.currentTarget.value.length)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                e.currentTarget.blur()
+              }
+              if (e.key === 'Escape') {
+                e.stopPropagation()
+                cancelled.current = true
+                e.currentTarget.blur()
+              }
+            }}
+            aria-label="Edit to-do"
+          />
+        ) : (
+          <h3 onDoubleClick={start}>{task.text ? <TaskText text={task.text} docs={docs} /> : <i>Empty to-do</i>}</h3>
+        )}
+        <div className="tcard-pills">
+          {task.due && <span className={`pill due-pill ${tone}`}>{dueLabel(task.due)}</span>}
+          <button
+            className={`pill status ${task.done ? 'is-done' : 'is-open'}`}
+            onClick={onToggle}
+            role="checkbox"
+            aria-checked={task.done}
+            title={task.done ? 'Mark as open' : 'Mark as done'}
+          >
+            {task.done ? 'done' : 'open'}
+          </button>
+        </div>
+      </header>
+
+      <dl className="tcard-stats">
+        <div>
+          <dt>due</dt>
+          <dd className={tone}>{task.due ? dueLabel(task.due) : '—'}</dd>
+        </div>
+        <div>
+          <dt>folder</dt>
+          <dd>{folder?.name ?? '—'}</dd>
+        </div>
+        <div>
+          <dt>section</dt>
+          <dd>
+            <select
+              className="tcard-move"
+              value={task.section ?? ''}
+              onChange={(e) => store.setTaskSection(task.docId, task.line, e.target.value || null)}
+              aria-label="Move to section"
+            >
+              <option value="">Inbox</option>
+              {(store.state.sections ?? []).map((s) => (
+                <option key={s.id} value={slugify(s.name)}>
+                  {s.name}
+                </option>
+              ))}
+              {task.section && !(store.state.sections ?? []).some((s) => slugify(s.name) === task.section) && (
+                <option value={task.section}>{task.section.replace(/-/g, ' ')}</option>
+              )}
+            </select>
+          </dd>
+        </div>
+      </dl>
+
+      <footer className="tcard-foot">
+        <div className="tcard-from">
+          <span className="tcard-label">from note</span>
+          <div className="tcard-note">
+            <span className={`tcard-avatar dot-${folder?.color ?? 'grey'}`}>{(doc.title.trim()[0] ?? '·').toUpperCase()}</span>
+            <div>
+              <b>{doc.title || 'Untitled'}</b>
+              <a href={`#/doc/${doc.id}`}>open note</a>
+            </div>
+          </div>
+        </div>
+        <div className="tcard-actions">
+          <button className="tcard-btn danger" onClick={onDelete} aria-label="Delete to-do" title="Delete">
+            {BoardIcon.trash}
+          </button>
+          <button className="tcard-btn" onClick={start} aria-label="Edit to-do" title="Edit">
+            {BoardIcon.pencil}
+          </button>
+          <a className="tcard-btn" href={`#/doc/${doc.id}`} aria-label="Open note" title="Open note">
+            {BoardIcon.arrow}
+          </a>
+        </div>
+      </footer>
+    </article>
+  )
+}
+
+function BoardColumn({
+  col,
+  tasks,
+  store,
+  first,
+  last,
+  onAdd,
+  onToggle,
+  onDelete,
+}: {
+  col: Column
+  tasks: Task[]
+  store: Store
+  first: boolean
+  last: boolean
+  onAdd: (text: string, tag: string | null) => void
+  onToggle: (t: Task) => void
+  onDelete: (t: Task) => void
+}) {
+  const [over, setOver] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [name, setName] = useState(col.name)
+  const sec = col.section
+  const open = tasks.filter((t) => !t.done).length
+
+  const commitName = () => {
+    setRenaming(false)
+    const n = name.trim()
+    if (!sec || !n || n === sec.name) return setName(col.name)
+    const taken = (store.state.sections ?? []).some((x) => x.id !== sec.id && slugify(x.name) === slugify(n))
+    if (taken || !slugify(n)) return setName(col.name)
+    store.updateSection(sec.id, { name: n })
+  }
+
+  const remove = () => {
+    if (!sec) return
+    if (tasks.length && !confirm(`Delete “${sec.name}”? Its ${count(tasks.length, 'to-do')} move back to Inbox.`)) return
+    store.deleteSection(sec.id)
+  }
+
+  const cycleColor = () => {
+    if (!sec) return
+    store.updateSection(sec.id, { color: COLORS[(COLORS.indexOf(sec.color) + 1) % COLORS.length] })
+  }
+
+  return (
+    <section
+      className={`board-col ${over ? 'over' : ''}`}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes('application/x-dok-task')) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+        setOver(true)
+      }}
+      onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setOver(false)}
+      onDrop={(e) => {
+        setOver(false)
+        const raw = e.dataTransfer.getData('application/x-dok-task')
+        if (!raw) return
+        e.preventDefault()
+        const { docId, line } = JSON.parse(raw) as { docId: string; line: number }
+        store.setTaskSection(docId, line, col.tag)
+      }}
+    >
+      <div className="board-col-head">
+        <button className={`col-dot dot-${col.color}`} onClick={cycleColor} disabled={!sec} aria-label="Change color" title={sec ? 'Change color' : undefined} />
+        {renaming ? (
+          <input
+            className="col-name-input"
+            autoFocus
+            value={name}
+            onFocus={(e) => e.currentTarget.select()}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+              if (e.key === 'Escape') {
+                setName(col.name)
+                setRenaming(false)
+              }
+            }}
+          />
+        ) : (
+          <h2 onDoubleClick={() => sec && setRenaming(true)} title={sec ? 'Double-click to rename' : undefined}>
+            {col.name}
+          </h2>
+        )}
+        <span className="col-count">{open}</span>
+        {sec && (
+          <div className="col-tools">
+            <button onClick={() => store.moveSection(sec.id, -1)} disabled={first} aria-label="Move left" title="Move left">
+              {BoardIcon.left}
+            </button>
+            <button onClick={() => store.moveSection(sec.id, 1)} disabled={last} aria-label="Move right" title="Move right">
+              {BoardIcon.right}
+            </button>
+            <button onClick={() => setRenaming(true)} aria-label="Rename section" title="Rename">
+              {BoardIcon.pencil}
+            </button>
+            <button onClick={remove} aria-label="Delete section" title="Delete section">
+              {BoardIcon.x}
+            </button>
+          </div>
+        )}
+      </div>
+      {col.tag && <p className="col-tag">#{col.tag}</p>}
+
+      <div className="board-cards">
+        {tasks.map((t) => (
+          <TaskCard key={t.docId + ':' + t.line} task={t} store={store} onToggle={() => onToggle(t)} onDelete={() => onDelete(t)} />
+        ))}
+        {!tasks.length && <p className="col-empty">{col.tag ? 'Drop a to-do here' : 'Nothing here'}</p>}
+      </div>
+
+      <TaskInput className="col-add" placeholder={`Add to ${col.name}…`} onAdd={(text) => onAdd(text, col.tag)} />
+    </section>
+  )
+}
+
+function NewSectionColumn({ store }: { store: Store }) {
+  const [adding, setAdding] = useState(false)
+  const [name, setName] = useState('')
+  const sections = store.state.sections ?? []
+  const submit = () => {
+    const n = name.trim()
+    setAdding(false)
+    setName('')
+    if (!n || !slugify(n) || sections.some((x) => slugify(x.name) === slugify(n))) return
+    store.addSection(n, COLORS[sections.length % COLORS.length])
+  }
+  return (
+    <div className="board-col new-col">
+      {adding ? (
+        <input
+          className="col-name-input"
+          autoFocus
+          placeholder="Section name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={submit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur()
+            if (e.key === 'Escape') {
+              setName('')
+              setAdding(false)
+            }
+          }}
+        />
+      ) : (
+        <button onClick={() => setAdding(true)}>
+          {Icon.plus}
+          New section
+        </button>
+      )}
+    </div>
+  )
+}
+
+function Board({
+  store,
+  tasks,
+  onAdd,
+  onToggle,
+  onDelete,
+}: {
+  store: Store
+  tasks: Task[]
+  onAdd: (text: string, tag: string | null) => void
+  onToggle: (t: Task) => void
+  onDelete: (t: Task) => void
+}) {
+  const sections = store.state.sections ?? []
+  const known = new Set(sections.map((s) => slugify(s.name)))
+  // tags typed in notes that have no section yet still get a column
+  const orphanTags = [...new Set(tasks.map((t) => t.section).filter((t): t is string => !!t && !known.has(t)))]
+  const columns: Column[] = [
+    { key: 'inbox', tag: null, name: 'Inbox', color: 'grey' },
+    ...sections.map((s) => ({ key: s.id, tag: slugify(s.name), name: s.name, color: s.color, section: s })),
+    ...orphanTags.map((t) => ({ key: 'tag:' + t, tag: t, name: t.replace(/-/g, ' '), color: 'grey' as FolderColor })),
+  ]
+  const inColumn = (c: Column) => tasks.filter((t) => (c.tag ? t.section === c.tag : !t.section))
+
+  return (
+    <div className="board">
+      {columns.map((c, i) => (
+        <BoardColumn
+          key={c.key}
+          col={c}
+          tasks={inColumn(c)}
+          store={store}
+          first={i <= 1}
+          last={!c.section || i === sections.length}
+          onAdd={onAdd}
+          onToggle={onToggle}
+          onDelete={onDelete}
+        />
+      ))}
+      <NewSectionColumn store={store} />
+    </div>
+  )
+}
+
 type TaskFilter = 'today' | 'open' | 'done' | 'all'
 
 function TasksView({ store }: { store: Store }) {
@@ -1247,6 +1642,15 @@ function TasksView({ store }: { store: Store }) {
   }
   const [toast, withUndo] = useDocUndo(store)
   const addRef = useRef<HTMLInputElement>(null)
+  const [view, setViewState] = useState<'board' | 'list'>(() => (localStorage.getItem('dok:taskView') === 'list' ? 'list' : 'board'))
+  const setView = (v: 'board' | 'list') => {
+    setViewState(v)
+    try {
+      localStorage.setItem('dok:taskView', v)
+    } catch {
+      /* ignore */
+    }
+  }
 
   // ticked while on Open/Today → keep showing until the filter changes, so rows don't jump out from under the cursor
   const [lingering, setLingering] = useState<Set<string>>(new Set())
@@ -1294,10 +1698,11 @@ function TasksView({ store }: { store: Store }) {
     }
   }
 
-  const add = (text: string) => {
+  const add = (text: string, tag?: string | null) => {
     if (!target) return
     // on Today, an undated to-do would vanish on add, so date it today
-    const t = filter === 'today' && !/@\S/.test(text) ? `${text} @today` : text
+    let t = filter === 'today' && !/@\S/.test(text) ? `${text} @today` : text
+    if (tag && !/(^|\s)#\S/.test(t)) t += ` #${tag}`
     store.addTask(target.id, t)
     if (filter === 'done') setFilter('open')
   }
@@ -1313,6 +1718,10 @@ function TasksView({ store }: { store: Store }) {
     (filter === 'all' ? true : filter === 'done' ? t.done : filter === 'today' ? isToday(t) : !t.done)
 
   const groups = withTasks.map((x) => ({ ...x, shown: x.tasks.filter(visible) })).filter((x) => x.shown.length)
+  const deleteTask = (t: Task) => {
+    setLingering(new Set())
+    withUndo(t.docId, 'To-do deleted', () => store.editTask(t.docId, t.line, ''))
+  }
 
   const folderOf = (id: string) => folders.find((f) => f.id === id)
 
@@ -1324,7 +1733,7 @@ function TasksView({ store }: { store: Store }) {
   ]
 
   return (
-    <div className="page narrow">
+    <div className={`page tasks-page ${view === 'list' ? 'narrow' : 'wide'}`}>
       <div className="page-head tasks-head">
         <div>
           <h1>Tasks</h1>
@@ -1372,16 +1781,27 @@ function TasksView({ store }: { store: Store }) {
         </TaskInput>
       )}
 
-      <div className="segmented" role="tablist">
-        {tabs.map((t) => (
-          <button key={t.id} role="tab" aria-selected={filter === t.id} className={filter === t.id ? 'on' : ''} onClick={() => setFilter(t.id)}>
-            {t.label}
-            <span className={t.id === 'today' && t.n ? 'hot' : ''}>{t.n}</span>
-          </button>
-        ))}
+      <div className="tasks-toolbar">
+        <div className="segmented" role="tablist">
+          {tabs.map((t) => (
+            <button key={t.id} role="tab" aria-selected={filter === t.id} className={filter === t.id ? 'on' : ''} onClick={() => setFilter(t.id)}>
+              {t.label}
+              <span className={t.id === 'today' && t.n ? 'hot' : ''}>{t.n}</span>
+            </button>
+          ))}
+        </div>
+        <div className="segmented view-toggle" aria-label="Layout">
+          {(['board', 'list'] as const).map((v) => (
+            <button key={v} className={view === v ? 'on' : ''} aria-pressed={view === v} onClick={() => setView(v)}>
+              {v === 'board' ? 'Board' : 'List'}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {groups.length === 0 ? (
+      {view === 'board' && docs.length > 0 ? (
+        <Board store={store} tasks={all.filter(visible)} onAdd={add} onToggle={toggle} onDelete={deleteTask} />
+      ) : groups.length === 0 ? (
         <div className="empty">
           {total === 0 ? (
             <p>
@@ -1427,10 +1847,7 @@ function TasksView({ store }: { store: Store }) {
                     docs={docs}
                     onToggle={() => toggle(t)}
                     onEdit={(text) => store.editTask(doc.id, t.line, text)}
-                    onDelete={() => {
-                      setLingering(new Set())
-                      withUndo(doc.id, 'To-do deleted', () => store.editTask(doc.id, t.line, ''))
-                    }}
+                    onDelete={() => deleteTask(t)}
                   />
                 ))}
               </ul>
