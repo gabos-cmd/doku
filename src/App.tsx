@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { FolderArt, Logo, COLORS } from './FolderArt'
 import { GraphView } from './Graph'
+import { OfficeView } from './Office'
 import {
   demoState,
   docLinks,
@@ -31,6 +32,7 @@ type Route =
   | { view: 'home' }
   | { view: 'graph' }
   | { view: 'tasks' }
+  | { view: 'office' }
   | { view: 'space'; id: string }
   | { view: 'folder'; id: string }
   | { view: 'doc'; id: string }
@@ -39,6 +41,7 @@ function parse(hash: string): Route {
   const [, view, id] = hash.replace(/^#/, '').split('/')
   if (view === 'graph') return { view: 'graph' }
   if (view === 'tasks') return { view: 'tasks' }
+  if (view === 'office') return { view: 'office' }
   if ((view === 'space' || view === 'folder' || view === 'doc') && id) return { view, id }
   return { view: 'home' }
 }
@@ -74,6 +77,14 @@ const Icon = {
       <circle cx="18" cy="6" r="2.2" />
       <circle cx="12" cy="17" r="2.6" />
       <path d="M8 8.2 10.6 15M16.6 7.8 13.4 15M8.2 6.8l7.6-.6" />
+    </svg>
+  ),
+  office: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3.5" y="11" width="17" height="4" rx="1.2" />
+      <path d="M6 15v4.5M18 15v4.5" />
+      <rect x="9" y="5" width="6" height="6" rx="1.5" />
+      <path d="M12 5V3" />
     </svg>
   ),
   check: (
@@ -215,6 +226,12 @@ export default function App() {
                 <b>Tasks</b>
               </>
             )}
+            {route.view === 'office' && (
+              <>
+                <span>/</span>
+                <b>Office</b>
+              </>
+            )}
             {doc && (
               <>
                 <span>/</span>
@@ -232,6 +249,7 @@ export default function App() {
         <div className="content" key={'id' in route ? `${route.view}/${route.id}` : route.view}>
           {route.view === 'graph' && <GraphView state={store.state} />}
           {route.view === 'tasks' && <TasksView store={store} />}
+          {route.view === 'office' && <OfficeView />}
           {route.view === 'home' && <Home store={store} onNewFolder={(spaceId) => setCreating({ spaceId })} />}
           {route.view === 'space' &&
             (space ? (
@@ -328,6 +346,10 @@ function Sidebar({
           {Icon.check}
           <span>Tasks</span>
           {openTasks > 0 && <em>{openTasks}</em>}
+        </a>
+        <a className={`nav-item ${route.view === 'office' ? 'active' : ''}`} href="#/office">
+          {Icon.office}
+          <span>Office</span>
         </a>
 
         <div className="nav-heading">
